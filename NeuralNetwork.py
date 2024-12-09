@@ -6,13 +6,18 @@ from tkinter import ttk
 import sys
 from statistics import median
 
-# Global configuration (can be changed at runtime)
-activation_choice = "sigmoid"  # Options: "sigmoid", "tanh", "relu"
+# Global configuration (updated at runtime)
+activation_choice_hidden = "sigmoid"  # Activation for hidden layers
+activation_choice_output = "sigmoid"  # Activation for output layer
 cost_function_choice = "crossentropy"  # Options: "mse", "crossentropy"
 learning_rate = 0.1
 
+hidden_layer_structure = [8, 8]
 
-# Activation Functions and Their Derivatives
+
+###################################
+# Activation Functions and Derivatives
+###################################
 def sigmoid(x):
     return 1.0 / (1.0 + math.exp(-x))
 
@@ -37,24 +42,23 @@ def d_relu(raw_x):
     return 1 if raw_x > 0 else 0
 
 
-def activation_forward(x):
-    if activation_choice == "sigmoid":
+def activation_forward(x, activation_type):
+    if activation_type == "sigmoid":
         return sigmoid(x)
-    elif activation_choice == "tanh":
+    elif activation_type == "tanh":
         return tanh_act(x)
-    elif activation_choice == "relu":
+    elif activation_type == "relu":
         return relu(x)
     else:
         return sigmoid(x)
 
 
-def activation_derivative(output, raw_x):
-    # For sigmoid and tanh, derivative uses the output value directly
-    if activation_choice == "sigmoid":
+def activation_derivative(output, raw_x, activation_type):
+    if activation_type == "sigmoid":
         return d_sigmoid(output)
-    elif activation_choice == "tanh":
+    elif activation_type == "tanh":
         return d_tanh(output)
-    elif activation_choice == "relu":
+    elif activation_type == "relu":
         return d_relu(raw_x)
     else:
         return d_sigmoid(output)
@@ -63,14 +67,11 @@ def activation_derivative(output, raw_x):
 # Cost Functions
 def cost_derivative(output, target):
     if cost_function_choice == "mse":
-        # d/dOut of MSE = (output - target)
         return output - target
     elif cost_function_choice == "crossentropy":
-        # Cross entropy derivative with sigmoid:
         epsilon = 1e-9
         return (output - target) / ((output + epsilon) * (1 - output + epsilon))
     else:
-        # Default to MSE if unknown
         return output - target
 
 
@@ -82,7 +83,7 @@ class Axon:
 
 
 class Neuron:
-    def __init__(self, x, y, input_idx=-1, bias=None):
+    def __init__(self, x, y, input_idx=-1, bias=None, activation_type="sigmoid"):
         self.x = x
         self.y = y
         self.index = input_idx
@@ -92,6 +93,7 @@ class Neuron:
         self.inputs = []
         self.outputs = []
         self.raw_input_val = 0.0
+        self.activation_type = activation_type
 
     def connect_input(self, in_n):
         in_axon = Axon(in_n, self)
@@ -105,7 +107,6 @@ class Neuron:
         if self.result is not None:
             return self.result
         if self.index >= 0:
-            # Input neuron
             self.result = inputs[self.index]
             self.raw_input_val = self.result
         else:
@@ -115,15 +116,16 @@ class Neuron:
                 in_val = in_n.forward_prop(inputs) * in_axon.weight
                 total += in_val
             self.raw_input_val = total
-            self.result = activation_forward(total)
+            self.result = activation_forward(total, self.activation_type)
         return self.result
 
     def back_prop(self):
-        grad_activation = activation_derivative(self.result, self.raw_input_val)
+        grad_activation = activation_derivative(
+            self.result, self.raw_input_val, self.activation_type
+        )
         delta = self.error * grad_activation
-        # Update bias
+        global learning_rate
         self.bias -= learning_rate * delta
-        # Update weights and propagate error backward
         for in_axon in self.inputs:
             in_n = in_axon.input
             in_n.error += delta * in_axon.weight
@@ -137,23 +139,32 @@ class Neuron:
 
 
 class Network:
-    def __init__(self, num_inputs, num_hidden_layers, hidden_layer_width, num_outputs):
+    def __init__(
+        self,
+        num_inputs,
+        hidden_structure,
+        num_outputs,
+        activation_hidden,
+        activation_output,
+    ):
         self.inputs = []
         self.hidden_layers = []
         self.outputs = []
+        self.activation_hidden = activation_hidden
+        self.activation_output = activation_output
 
         # Create input layer
         for idx in range(num_inputs):
-            in_n = Neuron(0, 0, idx)
+            in_n = Neuron(0, 0, idx, activation_type=self.activation_hidden)
             self.inputs.append(in_n)
 
         prev_layer = self.inputs
 
         # Create hidden layers
-        for _ in range(num_hidden_layers):
+        for layer_size in hidden_structure:
             current_layer = []
-            for _ in range(hidden_layer_width):
-                neuron = Neuron(0, 0)
+            for _ in range(layer_size):
+                neuron = Neuron(0, 0, activation_type=self.activation_hidden)
                 for prev_neuron in prev_layer:
                     neuron.connect_input(prev_neuron)
                     prev_neuron.connect_output(neuron)
@@ -163,7 +174,7 @@ class Network:
 
         # Create output layer
         for _ in range(num_outputs):
-            out_n = Neuron(0, 0)
+            out_n = Neuron(0, 0, activation_type=self.activation_output)
             for prev_neuron in prev_layer:
                 out_n.connect_input(prev_neuron)
                 prev_neuron.connect_output(out_n)
@@ -183,10 +194,8 @@ class Network:
             out_n.forward_prop(inputs)
 
     def back_prop(self, target_outputs):
-        # Compute errors at output
         for idx, out_n in enumerate(self.outputs):
             out_n.error = cost_derivative(out_n.result, target_outputs[idx])
-        # Backprop
         for out_n in self.outputs:
             out_n.back_prop()
 
@@ -194,9 +203,60 @@ class Network:
         self.forward_prop(data_point.inputs)
         self.back_prop(data_point.outputs)
 
-    def test(self, data_point):
-        self.forward_prop(data_point.inputs)
-        return [out_n.result for out_n in self.outputs]
+    def test(self, data_points):
+        correct = 0
+        total = len(data_points)
+        for dp in data_points:
+            out = self.predict(dp.inputs)
+            pred = 1 if out > 0.5 else 0
+            if pred == dp.outputs[0]:
+                correct += 1
+        accuracy = correct / total if total > 0 else 0.0
+        return accuracy
+
+    def predict(self, inputs):
+        self.forward_prop(inputs)
+        return self.outputs[0].result
+
+    def log_weight_bias_summary(self):
+        all_neurons = self.get_all_neurons()
+        total_weights = 0
+        weight_count = 0
+        total_bias = 0
+        for n in all_neurons:
+            total_bias += n.bias
+            for ax in n.inputs:
+                total_weights += ax.weight
+                weight_count += 1
+        avg_bias = total_bias / len(all_neurons)
+        avg_weight = total_weights / weight_count if weight_count > 0 else 0.0
+        print(
+            f"Weight/Bias Summary: Avg Weight={avg_weight:.4f}, Avg Bias={avg_bias:.4f}"
+        )
+
+    def log_some_weights(self):
+        # Print some weights from each layer to show they are changing:
+        print("Logging sample weights from each layer:")
+
+        all_layers = [self.inputs] + self.hidden_layers + [self.outputs]
+        for li in range(len(all_layers) - 1):
+            layer_name = (
+                "Input->Hidden"
+                if li == 0
+                else (
+                    "Hidden->Hidden" if li < len(all_layers) - 2 else "Hidden->Output"
+                )
+            )
+            current_layer = all_layers[li]
+            next_layer = all_layers[li + 1]
+            if len(next_layer) > 0 and len(next_layer[0].inputs) > 0:
+                # Just print the first few axons of the first neuron in the next layer
+                print(f" {layer_name} Layer:")
+                target_neuron = next_layer[0]
+                for i, ax in enumerate(target_neuron.inputs[:3]):
+                    print(f"  Weight {i}: {ax.weight:.4f}")
+            else:
+                print(f" {layer_name} Layer: No neurons to log.")
 
 
 class DataPoint:
@@ -205,24 +265,16 @@ class DataPoint:
         self.outputs = outputs
 
 
-##########################################################
-# Step 1: Load and Preprocess Titanic Dataset
-##########################################################
-
-
 def load_titanic_data(filename="train.csv", train_ratio=0.8):
-    # We'll use features: Pclass, Sex, Age, SibSp, Parch, Fare
-    # Target: Survived (0 or 1)
     rows = []
     with open(filename, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        # Debug print
-        print("CSV columns:", reader.fieldnames)
+        for r in reader:
+            rows.append(r)
 
-        for row in reader:
-            rows.append(row)
+    if len(rows) == 0:
+        raise ValueError("No data found in the file.")
 
-    # Check if 'Age' is in the columns:
     if "Age" not in rows[0]:
         raise ValueError(
             "The dataset does not contain an 'Age' column. Available columns: {}".format(
@@ -230,9 +282,7 @@ def load_titanic_data(filename="train.csv", train_ratio=0.8):
             )
         )
 
-    # Extract relevant features and handle missing values
-    # Convert Sex to binary: male=1, female=0
-    # Fill missing Age and Fare with median
+    # Extract features: Pclass, Sex, Age, SibSp, Parch, Fare
     ages = []
     fares = []
     for r in rows:
@@ -240,8 +290,8 @@ def load_titanic_data(filename="train.csv", train_ratio=0.8):
             ages.append(float(r["Age"]))
         if r["Fare"] != "":
             fares.append(float(r["Fare"]))
-    median_age = median(ages)
-    median_fare = median(fares)
+    median_age = median(ages) if ages else 30.0
+    median_fare = median(fares) if fares else 14.4
 
     data_points = []
     for r in rows:
@@ -252,90 +302,170 @@ def load_titanic_data(filename="train.csv", train_ratio=0.8):
             sibsp = float(r["SibSp"])
             parch = float(r["Parch"])
             fare = float(r["Fare"]) if r["Fare"] != "" else median_fare
-            survived = float(r["Survived"])
 
-            # Normalize some continuous inputs (for simplicity, we can divide Age, Fare by max)
-            # This is not strictly required, but can help training.
-            # Just a simple scaling:
-            age /= 80.0  # 80 is roughly max age
-            fare /= 512.0  # 512 is roughly max fare in Titanic dataset
+            # Normalize
+            age /= 80.0
+            fare /= 512.0
+            survived = float(r["Survived"])
 
             inputs = [pclass, sex, age, sibsp, parch, fare]
             outputs = [survived]
             data_points.append(DataPoint(inputs, outputs))
         except:
-            # If any parsing fails, skip that row
             continue
 
-    # Shuffle and split
     random.shuffle(data_points)
     cutoff = int(len(data_points) * train_ratio)
     train_data = data_points[:cutoff]
     test_data = data_points[cutoff:]
-
     return train_data, test_data
 
 
 ##########################################################
-# Step 5: GUI to Display the Network
+# GUI with modifications to show node outputs and ensure all layers update
 ##########################################################
 
 
 class NetworkGUI:
-    def __init__(self, network):
-        self.network = network
+    def __init__(self, train_data, test_data):
+        self.train_data = train_data
+        self.test_data = test_data
+
         self.root = tk.Tk()
         self.root.title("Neural Network Visualization")
 
-        self.canvas = tk.Canvas(self.root, width=800, height=600, bg="white")
-        self.canvas.pack()
-
-        # Create dropdowns or entries to configure activation/cost if desired
+        # Main frame for controls
         control_frame = tk.Frame(self.root)
-        control_frame.pack()
+        control_frame.pack(side=tk.TOP, fill=tk.X)
 
-        tk.Label(control_frame, text="Activation:").pack(side=tk.LEFT)
-        self.activation_var = tk.StringVar(value=activation_choice)
-        activation_box = ttk.Combobox(
-            control_frame,
-            textvariable=self.activation_var,
-            values=["sigmoid", "tanh", "relu"],
+        # Layer structure
+        tk.Label(control_frame, text="Hidden Layers (comma-separated sizes):").pack(
+            side=tk.LEFT
         )
-        activation_box.pack(side=tk.LEFT)
+        self.layer_entry = tk.Entry(control_frame, width=10)
+        self.layer_entry.insert(0, "8,8")
+        self.layer_entry.pack(side=tk.LEFT)
 
+        # Activation for hidden layers
+        tk.Label(control_frame, text="Hidden Activation:").pack(side=tk.LEFT)
+        self.hidden_act_var = tk.StringVar(value="sigmoid")
+        hidden_act_box = ttk.Combobox(
+            control_frame,
+            textvariable=self.hidden_act_var,
+            values=["sigmoid", "tanh", "relu"],
+            width=8,
+        )
+        hidden_act_box.pack(side=tk.LEFT)
+
+        # Activation for output layer
+        tk.Label(control_frame, text="Output Activation:").pack(side=tk.LEFT)
+        self.output_act_var = tk.StringVar(value="sigmoid")
+        output_act_box = ttk.Combobox(
+            control_frame,
+            textvariable=self.output_act_var,
+            values=["sigmoid", "tanh", "relu"],
+            width=8,
+        )
+        output_act_box.pack(side=tk.LEFT)
+
+        # Cost Function
         tk.Label(control_frame, text="Cost:").pack(side=tk.LEFT)
-        self.cost_var = tk.StringVar(value=cost_function_choice)
+        self.cost_var = tk.StringVar(value="crossentropy")
         cost_box = ttk.Combobox(
-            control_frame, textvariable=self.cost_var, values=["mse", "crossentropy"]
+            control_frame,
+            textvariable=self.cost_var,
+            values=["mse", "crossentropy"],
+            width=12,
         )
         cost_box.pack(side=tk.LEFT)
 
-        tk.Button(control_frame, text="Update Config", command=self.update_config).pack(
-            side=tk.LEFT
+        # Epochs
+        tk.Label(control_frame, text="Epochs:").pack(side=tk.LEFT)
+        self.epochs_entry = tk.Entry(control_frame, width=5)
+        self.epochs_entry.insert(0, "5")
+        self.epochs_entry.pack(side=tk.LEFT)
+
+        # Learning Rate
+        tk.Label(control_frame, text="Learning Rate:").pack(side=tk.LEFT)
+        self.lr_entry = tk.Entry(control_frame, width=5)
+        self.lr_entry.insert(0, "0.1")
+        self.lr_entry.pack(side=tk.LEFT)
+
+        # Buttons
+        tk.Button(control_frame, text="Build Network", command=self.build_network).pack(
+            side=tk.LEFT, padx=5
+        )
+        tk.Button(control_frame, text="Train Network", command=self.train_network).pack(
+            side=tk.LEFT, padx=5
+        )
+        tk.Button(control_frame, text="Test Network", command=self.test_network).pack(
+            side=tk.LEFT, padx=5
         )
 
-        # Layout neurons on canvas:
+        self.canvas = tk.Canvas(self.root, width=1000, height=600, bg="white")
+        self.canvas.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+
+        self.network = None
         self.neuron_positions = []
+
+    def parse_layer_structure(self):
+        txt = self.layer_entry.get().strip()
+        if not txt:
+            return []
+        return [int(x.strip()) for x in txt.split(",") if x.strip().isdigit()]
+
+    def build_network(self):
+        global cost_function_choice, activation_choice_hidden, activation_choice_output, hidden_layer_structure, learning_rate
+        hidden_layer_structure = self.parse_layer_structure()
+        activation_choice_hidden = self.hidden_act_var.get()
+        activation_choice_output = self.output_act_var.get()
+        cost_function_choice = self.cost_var.get()
+
+        try:
+            learning_rate = float(self.lr_entry.get().strip())
+        except:
+            learning_rate = 0.1
+
+        # Create network
+        self.network = Network(
+            6,
+            hidden_layer_structure,
+            1,
+            activation_choice_hidden,
+            activation_choice_output,
+        )
+
+        # Lay out the network
         self._layout_network()
+        self.draw_network()
+
+        print("Network built with structure:", hidden_layer_structure)
+        print(
+            "Hidden activation:",
+            activation_choice_hidden,
+            "Output activation:",
+            activation_choice_output,
+            "Cost:",
+            cost_function_choice,
+        )
+        print(f"Learning Rate: {learning_rate}")
 
     def _layout_network(self):
-        # We will place input layer neurons, then hidden layers, then output layer
+        self.neuron_positions = []
+        if not self.network:
+            return
+
         x_offset = 100
         y_spacing = 50
 
         layers = (
             [self.network.inputs] + self.network.hidden_layers + [self.network.outputs]
         )
-
-        max_layer_size = max(len(layer) for layer in layers)
-        start_y = 300 - (max_layer_size * y_spacing) / 2
-
-        # Compute positions
         layer_x = x_offset
         for layer in layers:
-            layer_positions = []
             layer_height = len(layer) * y_spacing
             y_start = 300 - layer_height / 2
+            layer_positions = []
             for i, neuron in enumerate(layer):
                 x = layer_x
                 y = y_start + i * y_spacing
@@ -345,72 +475,50 @@ class NetworkGUI:
 
     def draw_network(self):
         self.canvas.delete("all")
+        if not self.network:
+            return
+
+        all_layers = (
+            [self.network.inputs] + self.network.hidden_layers + [self.network.outputs]
+        )
         # Draw neurons
         for li, layer_positions in enumerate(self.neuron_positions):
-            for ni, (x, y) in enumerate(layer_positions):
+            for x, y in layer_positions:
                 self.canvas.create_oval(
                     x - 15, y - 15, x + 15, y + 15, fill="lightblue", outline="black"
                 )
 
-        # Draw axons
-        # For each layer except the last, connect to next layer
+        # Draw axons with weights
+        # Reduced scaling factor for line thickness to highlight small changes
         for li in range(len(self.neuron_positions) - 1):
             for ni, (x1, y1) in enumerate(self.neuron_positions[li]):
-                neuron = (
-                    self.network.inputs
-                    if li == 0
-                    else (
-                        self.network.hidden_layers[li - 1]
-                        if li <= len(self.network.hidden_layers)
-                        else self.network.outputs
-                    )
-                )[ni]
-                if li == 0:
-                    current_layer = self.network.inputs
-                elif li == len(self.network.hidden_layers):
-                    current_layer = self.network.hidden_layers[-1]
-                else:
-                    current_layer = self.network.hidden_layers[li - 1]
-
-                # Actually we need to get layer neurons:
-                if li == 0:
-                    current_layer = self.network.inputs
-                elif li <= len(self.network.hidden_layers):
-                    current_layer = self.network.hidden_layers[li - 1]
-                else:
-                    current_layer = self.network.outputs
-
-                # next layer
-                if li < len(self.network.hidden_layers):
-                    next_layer = self.network.hidden_layers[li]
-                else:
-                    next_layer = self.network.outputs
-
-                in_neuron = current_layer[ni]
+                in_neuron = all_layers[li][ni]
                 for oi, (x2, y2) in enumerate(self.neuron_positions[li + 1]):
-                    out_neuron = (
-                        self.network.hidden_layers[li]
-                        if li < len(self.network.hidden_layers)
-                        else self.network.outputs
-                    )[oi]
-                    # find axon weight
-                    # an axon from in_neuron to out_neuron
+                    out_neuron = all_layers[li + 1][oi]
                     for axon in out_neuron.inputs:
                         if axon.input is in_neuron:
                             weight = axon.weight
                             color = "red" if weight > 0 else "blue"
-                            width = min(max(abs(weight) * 50, 1), 5)
+                            # smaller multiplier so even small changes are visible
+                            width = min(max(abs(weight) * 10, 1), 5)
                             self.canvas.create_line(
                                 x1 + 15, y1, x2 - 15, y2, fill=color, width=width
                             )
+                            mid_x = (x1 + 15 + x2 - 15) / 2
+                            mid_y = (y1 + y2) / 2
+                            self.canvas.create_text(
+                                mid_x,
+                                mid_y,
+                                text=f"{weight:.2f}",
+                                fill="black",
+                                font=("Arial", 8),
+                            )
 
-        # Draw biases as text above each neuron
-        all_layers = (
-            [self.network.inputs] + self.network.hidden_layers + [self.network.outputs]
-        )
+        # Draw biases
         for li, layer_positions in enumerate(self.neuron_positions):
+            layer = all_layers[li]
             for ni, (x, y) in enumerate(layer_positions):
-                neuron = all_layers[li][ni]
+                neuron = layer[ni]
                 self.canvas.create_text(
                     x,
                     y - 25,
@@ -421,61 +529,95 @@ class NetworkGUI:
 
         self.root.update()
 
-    def update_config(self):
-        global activation_choice, cost_function_choice
-        activation_choice = self.activation_var.get()
-        cost_function_choice = self.cost_var.get()
-        print(
-            f"Updated config: Activation={activation_choice}, Cost={cost_function_choice}"
+    def display_neuron_outputs(self, sample_inputs):
+        # After training or testing, we can forward_prop a sample input and show neuron outputs
+        self.network.forward_prop(sample_inputs)
+        all_layers = (
+            [self.network.inputs] + self.network.hidden_layers + [self.network.outputs]
         )
+
+        # Draw neuron outputs next to each neuron
+        for li, layer_positions in enumerate(self.neuron_positions):
+            layer = all_layers[li]
+            for ni, (x, y) in enumerate(layer_positions):
+                neuron = layer[ni]
+                # neuron.result should hold the activation after forward_prop
+                self.canvas.create_text(
+                    x + 30,
+                    y,
+                    text=f"{neuron.result:.2f}",
+                    fill="green",
+                    font=("Arial", 8),
+                )
+        self.root.update()
+
+    def train_network(self):
+        if not self.network:
+            print("Build the network first!")
+            return
+        try:
+            epochs = int(self.epochs_entry.get().strip())
+        except:
+            epochs = 5
+
+        print(f"Starting training for {epochs} epochs...")
+        for epoch in range(epochs):
+            random.shuffle(self.train_data)
+            for data_point in self.train_data:
+                self.network.train(data_point)
+
+            # Evaluate accuracy on test set
+            accuracy = self.network.test(self.test_data)
+            print(f"Epoch {epoch+1}/{epochs}, Accuracy: {accuracy*100:.2f}%")
+
+            # Log sample predictions from training data
+            print("Sample predictions on training data:")
+            for i in range(min(3, len(self.train_data))):
+                sample_output = self.network.predict(self.train_data[i].inputs)
+                print(
+                    f" Sample {i} input={self.train_data[i].inputs} pred={sample_output:.4f} target={self.train_data[i].outputs[0]}"
+                )
+
+            # Log weight and bias summary + multiple layers sample weights
+            self.network.log_weight_bias_summary()
+            self.network.log_some_weights()
+
+            # Update GUI
+            self.draw_network()
+
+            # Also display neuron outputs from a sample input to see internal values changing:
+            if len(self.train_data) > 0:
+                sample_input = self.train_data[0].inputs
+                self.display_neuron_outputs(sample_input)
+
+        print("Training completed.")
+
+    def test_network(self):
+        if not self.network:
+            print("Build the network first!")
+            return
+        # Test accuracy on test_data
+        accuracy = self.network.test(self.test_data)
+        print(f"Test Accuracy: {accuracy*100:.2f}%")
+        print("Sample predictions on test data:")
+        for i in range(min(3, len(self.test_data))):
+            output = self.network.predict(self.test_data[i].inputs)
+            print(
+                f" Test sample {i} input={self.test_data[i].inputs}, pred={output:.4f}, target={self.test_data[i].outputs[0]}"
+            )
+
+        # Show neuron outputs after testing:
+        if len(self.test_data) > 0:
+            sample_input = self.test_data[0].inputs
+            self.display_neuron_outputs(sample_input)
 
     def mainloop(self):
         self.root.mainloop()
 
 
-##########################################################
-# Step 6: Run Training and Observe Updates
-##########################################################
-
-
 def main():
-    # Load data
     train_data, test_data = load_titanic_data()
-
-    # Create network
-    # Let's say we have 6 inputs (Pclass, Sex, Age, SibSp, Parch, Fare),
-    # 2 hidden layers with width 8, and 1 output (Survived probability).
-    num_inputs = 6
-    num_hidden_layers = 2
-    hidden_layer_width = 8
-    num_outputs = 1
-
-    network = Network(num_inputs, num_hidden_layers, hidden_layer_width, num_outputs)
-
-    # Create GUI
-    gui = NetworkGUI(network)
-    gui.draw_network()
-
-    # Train for some epochs
-    epochs = 5
-    for epoch in range(epochs):
-        # Shuffle training data
-        random.shuffle(train_data)
-        for data_point in train_data:
-            network.train(data_point)
-        # After each epoch, test accuracy
-        correct = 0
-        total = len(test_data)
-        for data_point in test_data:
-            output = network.test(data_point)[0]
-            prediction = 1 if output > 0.5 else 0
-            if prediction == data_point.outputs[0]:
-                correct += 1
-        accuracy = correct / total
-        print(f"Epoch {epoch+1}/{epochs}, Accuracy: {accuracy*100:.2f}%")
-        # Update visualization
-        gui.draw_network()
-
+    gui = NetworkGUI(train_data, test_data)
     gui.mainloop()
 
 
