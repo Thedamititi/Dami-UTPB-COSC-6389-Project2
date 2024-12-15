@@ -572,7 +572,7 @@ class NetworkGUI:
 
             # Log sample predictions from training data
             print("Sample predictions on training data:")
-            for i in range(min(3, len(self.train_data))):
+            for i in range(min(10, len(self.train_data))):
                 sample_output = self.network.predict(self.train_data[i].inputs)
                 print(
                     f" Sample {i} input={self.train_data[i].inputs} pred={sample_output:.4f} target={self.train_data[i].outputs[0]}"
